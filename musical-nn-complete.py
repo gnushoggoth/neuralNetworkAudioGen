@@ -19,15 +19,15 @@ class MusicalNeuron:
     harmonics: List[float]
     harmonic_weights: List[float]
     waveform_type: WaveformType
-    attack: float
-    decay: float
-    sustain: float
-    release: float
+    attack: float  # milliseconds
+    decay: float   # milliseconds
+    sustain: float # level (0-1)
+    release: float # milliseconds
     vibrato_rate: float
     vibrato_depth: float
 
 class HarmonicNeuralNetwork:
-    def __init__(self, layer_sizes: List[int], sample_rate: int = 128000):  # Updated to 128kHz
+    def __init__(self, layer_sizes: List[int], sample_rate: int = 44100):
         """Initialize the neural network with specified layer sizes"""
         self.layers = layer_sizes
         self.sample_rate = sample_rate
@@ -37,7 +37,7 @@ class HarmonicNeuralNetwork:
         self.activations = []
         self.z_values = []
         
-        # Initialize pygame mixer with higher sample rate
+        # Initialize pygame mixer
         pygame.mixer.init(frequency=sample_rate)
         
         # Musical scale frequencies (based on just intonation)
@@ -80,22 +80,25 @@ class HarmonicNeuralNetwork:
         for layer_idx, layer_size in enumerate(self.layers):
             layer_neurons = []
             for neuron_idx in range(layer_size):
+                # Choose base frequency from scale
                 base_freq = self.base_frequencies[neuron_idx % len(self.base_frequencies)]
+                
+                # Create harmonics and weights
                 harmonics = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
                 weights = [1.0, 0.5, 0.33, 0.25, 0.2, 0.16]
                 
-                # Cycle through waveform types for variety
+                # Cycle through waveform types
                 waveform = waveform_types[neuron_idx % len(waveform_types)]
                 
-                # ADSR envelope parameters (milliseconds)
-                attack = 15.0 + (neuron_idx * 0.5)
-                decay = 45.0 + (neuron_idx * 1.0)
-                sustain = 0.7 - (neuron_idx * 0.02)
-                release = 200.0 + (neuron_idx * 2.0)
+                # ADSR envelope parameters
+                attack = 15.0 + (neuron_idx * 0.5)    # 15-25ms attack
+                decay = 45.0 + (neuron_idx * 1.0)     # 45-65ms decay
+                sustain = 0.7 - (neuron_idx * 0.02)   # 0.7-0.5 sustain level
+                release = 200.0 + (neuron_idx * 2.0)  # 200-240ms release
                 
                 # Subtle vibrato
-                vibrato_rate = 5.0 + (neuron_idx * 0.2)
-                vibrato_depth = 0.015
+                vibrato_rate = 5.0 + (neuron_idx * 0.2)  # 5-7Hz
+                vibrato_depth = 0.015                     # 1.5% frequency variation
                 
                 layer_neurons.append(MusicalNeuron(
                     base_frequency=base_freq,
@@ -112,7 +115,7 @@ class HarmonicNeuralNetwork:
             self.neurons.append(layer_neurons)
 
     def _initialize_weights_and_biases(self):
-        """Initialize network weights and biases"""
+        """Initialize network weights and biases with audio feedback"""
         print("\nInitializing neural network with musical feedback...")
         
         for i in range(len(self.layers) - 1):
@@ -124,27 +127,20 @@ class HarmonicNeuralNetwork:
             self.biases.append(biases)
             
             # Create initialization sound
-            duration = 0.5
-            t = np.linspace(0, duration, int(self.sample_rate * duration))
-            init_audio = np.zeros_like(t)
-            
-            # Add tones for first few neurons in the layer
-            for j in range(min(3, len(self.neurons[i]))):
-                neuron = self.neurons[i][j]
-                init_audio += self._create_neuron_tone(neuron, 0.5, duration)
-            
-            self._play_audio(init_audio)
-            time.sleep(0.2)
+            self._sonify_layer_initialization(i)
+            time.sleep(0.3)
 
     def _create_adsr_envelope(self, duration: float, neuron: MusicalNeuron) -> np.ndarray:
         """Create ADSR envelope for smooth sound shaping"""
         samples = int(self.sample_rate * duration)
         envelope = np.zeros(samples)
         
+        # Convert milliseconds to samples
         attack_samples = int(neuron.attack * self.sample_rate / 1000)
         decay_samples = int(neuron.decay * self.sample_rate / 1000)
         release_samples = int(neuron.release * self.sample_rate / 1000)
         
+        # Create envelope segments
         attack_end = min(attack_samples, samples)
         envelope[:attack_end] = np.linspace(0, 1, attack_end)
         
@@ -194,9 +190,9 @@ class HarmonicNeuralNetwork:
         if max_val > 0:
             audio = audio / max_val
         
-        # Create stereo effect
+        # Create stereo effect with slight delay
         left_channel = audio
-        right_channel = np.roll(audio, 22)  # Small delay for stereo width
+        right_channel = np.roll(audio, 22)  # 0.5ms delay at 44.1kHz
         stereo_audio = np.column_stack((
             np.int16(left_channel * 32767),
             np.int16(right_channel * 32767)
@@ -205,68 +201,42 @@ class HarmonicNeuralNetwork:
         pygame.sndarray.make_sound(stereo_audio).play()
         time.sleep(len(audio) / self.sample_rate)
 
-    def _create_weight_based_audio(self, duration: float) -> np.ndarray:
-        """Create audio based on direct weight-to-time mapping"""
-        num_samples = int(self.sample_rate * duration)
+    def _sonify_layer_initialization(self, layer_idx: int):
+        """Create sound for layer initialization"""
+        duration = 0.3
+        t = np.linspace(0, duration, int(self.sample_rate * duration))
+        init_audio = np.zeros_like(t)
         
-        # Calculate total number of weights
-        total_weights = sum(w.size for w in self.weights)
+        # Create chord from first few neurons
+        for i in range(min(3, len(self.neurons[layer_idx]))):
+            neuron = self.neurons[layer_idx][i]
+            init_audio += self._create_neuron_tone(neuron, 0.5, duration)
         
-        # Divide time linearly based on number of weights
-        samples_per_weight = num_samples // total_weights
-        
-        # Initialize audio buffer
-        audio = np.zeros(num_samples)
-        
-        current_sample = 0
-        for layer_idx, weight_matrix in enumerate(self.weights):
-            # Flatten weights and get mean for each time step
-            flat_weights = weight_matrix.flatten()
-            
-            for weight_idx, weight in enumerate(flat_weights):
-                if current_sample + samples_per_weight > num_samples:
-                    break
-                    
-                # Direct mapping of weight to amplitude
-                amplitude = np.tanh(weight)  # Normalize to [-1, 1]
-                
-                # Get corresponding neuron's base frequency
-                source_neuron = weight_idx % self.layers[layer_idx]
-                freq = self.base_frequencies[source_neuron % len(self.base_frequencies)]
-                
-                # Generate the tone for this time segment
-                t = np.linspace(0, duration * samples_per_weight / num_samples, 
-                              samples_per_weight)
-                segment = amplitude * np.sin(2 * np.pi * freq * t)
-                
-                # Add to audio buffer
-                audio[current_sample:current_sample + samples_per_weight] = segment
-                current_sample += samples_per_weight
-        
-        return audio
+        self._play_audio(init_audio)
 
     def _sonify_layer_activity(self, layer_idx: int, activations: np.ndarray, 
-                              description: str = "", duration: float = 0.75):
-        """Create musical audio representation of layer activity using weight-based timing"""
-        if layer_idx >= len(self.neurons):
-            return
-            
+                              description: str = "", duration: float = 0.5):
+        """Create audio representation of layer activity"""
         print(f"\nLayer {layer_idx} Activity: {description}")
         
-        # Create weight-based audio
-        layer_audio = self._create_weight_based_audio(duration)
+        t = np.linspace(0, duration, int(self.sample_rate * duration))
+        layer_audio = np.zeros_like(t)
         
-        # Modulate the audio based on activations
-        active_neurons = [(i, act) for i, act in enumerate(activations.flatten()) if act > 0.1]
-        
-        for neuron_idx, activation in active_neurons:
+        # Add sounds for active neurons
+        activations_flat = activations.reshape(-1)
+        for neuron_idx, activation in enumerate(activations_flat):
             if neuron_idx >= len(self.neurons[layer_idx]):
-                continue
-            
-            # Scale the corresponding segment of audio by the activation
-            start_idx = int(neuron_idx * len(layer_audio) / len(self.neurons[layer_idx]))
-            end_idx = int((neuron_idx + 1) * len(layer_audio) / len(self.neurons[layer_idx]))
-            layer_audio[start_idx:end_idx] *= activation
+                break
+                
+            if activation > 0.1:  # Only play for significant activations
+                neuron = self.neurons[layer_idx][neuron_idx]
+                neuron_tone = self._create_neuron_tone(neuron, activation, duration)
+                layer_audio += neuron_tone
+                
+                # Print activation level
+                activity_level = ('highly active' if activation > 0.7 else
+                                'moderately active' if activation > 0.3 else 'quiet')
+                print(f"  Neuron {neuron_idx}: {activation:.3f} ({activity_level})")
         
         if np.any(layer_audio != 0):
             self._play_audio(layer_audio)
@@ -281,10 +251,16 @@ class HarmonicNeuralNetwork:
         current_activation = X
         
         for i in range(len(self.weights)):
+            # Compute weighted sum
             z = np.dot(current_activation, self.weights[i]) + self.biases[i]
             self.z_values.append(z)
             
-            current_activation = self.sigmoid(z) if i == len(self.weights) - 1 else self.relu(z)
+            # Apply activation function
+            if i == len(self.weights) - 1:
+                current_activation = self.sigmoid(z)  # Sigmoid for output layer
+            else:
+                current_activation = self.relu(z)     # ReLU for hidden layers
+            
             self.activations.append(current_activation)
             
             if play_audio:
@@ -297,37 +273,67 @@ class HarmonicNeuralNetwork:
               learning_rate: float = 0.01, batch_size: int = 32):
         """Train the network with musical feedback"""
         history = []
+        best_loss = float('inf')
+        patience = 10  # Early stopping patience
+        no_improve = 0
+        
+        print("\nStarting training...")
         
         for epoch in range(epochs):
+            # Shuffle training data
             indices = np.random.permutation(len(X))
             X_shuffled = X[indices]
             y_shuffled = y[indices]
             
             total_loss = 0
+            num_batches = 0
+            
             for i in range(0, len(X), batch_size):
                 X_batch = X_shuffled[i:i + batch_size]
                 y_batch = y_shuffled[i:i + batch_size]
                 
+                # Forward pass
                 predictions = self.forward_pass(X_batch, play_audio=(i == 0))
                 loss = self.compute_loss(predictions, y_batch)
                 total_loss += loss
+                num_batches += 1
                 
+                # Backward pass
                 self._backward_pass(X_batch, y_batch, learning_rate)
             
-            avg_loss = total_loss / (len(X) / batch_size)
+            # Calculate average loss
+            avg_loss = total_loss / num_batches
             history.append(avg_loss)
             
+            # Early stopping check
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                no_improve = 0
+            else:
+                no_improve += 1
+            
+            if no_improve >= patience:
+                print(f"\nStopping early at epoch {epoch} due to no improvement")
+                break
+            
             if epoch % 5 == 0:
-                print(f"\nEpoch {epoch}: Loss = {avg_loss:.4f}")
+                print(f"Epoch {epoch}: Loss = {avg_loss:.4f}")
         
         return history
 
     def _backward_pass(self, X: np.ndarray, y: np.ndarray, learning_rate: float):
         """Backward propagation with gradient sonification"""
         m = X.shape[0]
-        delta = self.activations[-1] - y.reshape(-1, 1)
+        
+        # Start with output layer error
+        output_activation = self.activations[-1]
+        output_error = output_activation - y.reshape(-1, 1)
+        
+        # For the output layer (sigmoid activation)
+        delta = output_error * output_activation * (1 - output_activation)
         
         for layer in range(len(self.weights) - 1, -1, -1):
+            # Compute gradients
             dW = np.dot(self.activations[layer].T, delta) / m
             db = np.sum(delta, axis=0, keepdims=True) / m
             
@@ -335,11 +341,14 @@ class HarmonicNeuralNetwork:
             if np.max(np.abs(dW)) > 0.01:
                 self._sonify_gradients(dW, layer)
             
+            # Update weights and biases
             self.weights[layer] -= learning_rate * dW
             self.biases[layer] -= learning_rate * db
             
+            # Compute delta for next layer (if not at input layer)
             if layer > 0:
                 delta = np.dot(delta, self.weights[layer].T)
+                # Use ReLU derivative for hidden layers
                 delta *= self.relu_derivative(self.z_values[layer-1])
 
     def _sonify_gradients(self, gradients: np.ndarray, layer_idx: int):
@@ -353,7 +362,7 @@ class HarmonicNeuralNetwork:
             for i in range(min(3, gradients.shape[0])):  # Sonify top 3 gradients
                 magnitude = np.max(np.abs(gradients[i]))
                 if magnitude > 0.01:
-                    freq = 440 * (1 + magnitude)
+                    freq = 440 * (1 + magnitude)  # Scale frequency with gradient magnitude
                     audio += 0.2 * self.generate_waveform(
                         freq, magnitude/max_grad, duration, WaveformType.SINE
                     )
@@ -429,7 +438,7 @@ def demo_network():
         print(f"Prediction: {prediction[0][0]:.3f}")
         time.sleep(1)
     
-    return nn
+    return nn, history
 
 
 def create_musical_composition(nn: HarmonicNeuralNetwork, duration: float = 5.0):
@@ -447,6 +456,7 @@ def create_musical_composition(nn: HarmonicNeuralNetwork, duration: float = 5.0)
     # Generate sounds for each input
     step_duration = duration / len(inputs)
     for i, input_vector in enumerate(inputs):
+        # Forward pass without playing audio
         prediction = nn.forward_pass(input_vector.reshape(1, -1), play_audio=False)
         
         # Create sound for this step
@@ -456,27 +466,31 @@ def create_musical_composition(nn: HarmonicNeuralNetwork, duration: float = 5.0)
                 end_idx = int((i + 1) * step_duration * nn.sample_rate)
                 if end_idx > len(composition):
                     end_idx = len(composition)
-                    
+                
+                # Generate layer sound
                 layer_sound = nn._sonify_layer_activity(
-                    layer_idx-1, layer_activation, 
-                    duration=step_duration, 
-                    description=f"Step {i}"
+                    layer_idx-1, layer_activation, duration=step_duration
                 )
                 
-                # Add to composition with crossfade
-                fade_length = int(0.1 * nn.sample_rate)  # 100ms crossfade
-                if i > 0:
-                    # Apply fadeout to previous segment
-                    fadeout = np.linspace(1, 0, fade_length)
-                    composition[start_idx:start_idx+fade_length] *= fadeout
-                    # Apply fadein to new segment
-                    fadein = np.linspace(0, 1, fade_length)
-                    layer_sound[:fade_length] *= fadein
-                
-                composition[start_idx:end_idx] += layer_sound[:end_idx-start_idx]
+                if layer_sound is not None and len(layer_sound) > 0:
+                    # Add crossfade
+                    fade_length = int(0.1 * nn.sample_rate)  # 100ms crossfade
+                    if i > 0 and start_idx + fade_length < len(composition):
+                        # Apply fadeout to previous segment
+                        fadeout = np.linspace(1, 0, fade_length)
+                        composition[start_idx:start_idx+fade_length] *= fadeout
+                        # Apply fadein to new segment
+                        fadein = np.linspace(0, 1, fade_length)
+                        layer_sound[:fade_length] *= fadein
+                    
+                    # Add to composition
+                    sound_length = min(len(layer_sound), end_idx - start_idx)
+                    composition[start_idx:start_idx+sound_length] += layer_sound[:sound_length]
     
     # Normalize final composition
-    composition = composition / np.max(np.abs(composition))
+    max_amplitude = np.max(np.abs(composition))
+    if max_amplitude > 0:
+        composition = composition / max_amplitude
     
     # Save composition
     nn.save_audio_sample("neural_composition.wav", composition)
@@ -486,10 +500,16 @@ def create_musical_composition(nn: HarmonicNeuralNetwork, duration: float = 5.0)
 
 
 if __name__ == "__main__":
-    # Run demo
-    nn = demo_network()
-    
-    # Create musical composition
-    composition = create_musical_composition(nn)
-    
-    print("\nDemo complete! Check the generated WAV files for the audio output.")
+    try:
+        # Run demo
+        nn, history = demo_network()
+        
+        # Create musical composition
+        composition = create_musical_composition(nn)
+        
+        print("\nDemo complete! Check the generated WAV files for the audio output.")
+        
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+    finally:
+        pygame.quit()

@@ -191,7 +191,7 @@ class HarmonicNeuralNetwork:
     def _play_audio(self, audio: np.ndarray):
         """Safely play audio with stereo enhancement"""
         max_val = np.max(np.abs(audio))
-        if max_val > 0:
+        if (max_val > 0):
             audio = audio / max_val
         
         # Create stereo effect
@@ -249,27 +249,50 @@ class HarmonicNeuralNetwork:
                               description: str = "", duration: float = 0.75):
         """Create musical audio representation of layer activity using weight-based timing"""
         if layer_idx >= len(self.neurons):
-            return
-            
+            return np.zeros(int(self.sample_rate * duration))  # Return empty audio if layer invalid
+        
         print(f"\nLayer {layer_idx} Activity: {description}")
         
+        # Initialize audio buffer
+        t = np.linspace(0, duration, int(self.sample_rate * duration))
+        layer_audio = np.zeros_like(t)
+        
         # Create weight-based audio
-        layer_audio = self._create_weight_based_audio(duration)
-        
-        # Modulate the audio based on activations
-        active_neurons = [(i, act) for i, act in enumerate(activations.flatten()) if act > 0.1]
-        
-        for neuron_idx, activation in active_neurons:
-            if neuron_idx >= len(self.neurons[layer_idx]):
-                continue
+        if layer_idx < len(self.weights):
+            weights = self.weights[layer_idx]
+            samples_per_weight = len(t) // weights.size
             
-            # Scale the corresponding segment of audio by the activation
-            start_idx = int(neuron_idx * len(layer_audio) / len(self.neurons[layer_idx]))
-            end_idx = int((neuron_idx + 1) * len(layer_audio) / len(self.neurons[layer_idx]))
-            layer_audio[start_idx:end_idx] *= activation
+            for i, weight in enumerate(weights.flatten()):
+                if i * samples_per_weight >= len(t):
+                    break
+                    
+                # Map weight to frequency and amplitude
+                amplitude = np.tanh(weight) * 0.5
+                base_freq = self.base_frequencies[i % len(self.base_frequencies)]
+                
+                # Generate time segment for this weight
+                segment_t = t[i*samples_per_weight:(i+1)*samples_per_weight]
+                if len(segment_t) > 0:  # Ensure we have samples to generate
+                    segment = amplitude * np.sin(2 * np.pi * base_freq * segment_t)
+                    layer_audio[i*samples_per_weight:(i+1)*samples_per_weight] = segment
         
+        # Modulate audio based on activations
+        activations_flat = activations.flatten()
+        for i, activation in enumerate(activations_flat):
+            if activation > 0.1 and i < len(self.neurons[layer_idx]):
+                neuron = self.neurons[layer_idx][i]
+                neuron_sound = self._create_neuron_tone(neuron, activation, duration)
+                layer_audio += neuron_sound * activation
+        
+        # Normalize audio
         if np.any(layer_audio != 0):
+            layer_audio = layer_audio / np.max(np.abs(layer_audio))
+        
+        # Only play audio if requested (during training/visualization)
+        if description:  # Only play if description provided (interactive mode)
             self._play_audio(layer_audio)
+        
+        return layer_audio  # Always return the audio data
 
     def forward_pass(self, X: np.ndarray, play_audio: bool = True) -> np.ndarray:
         """Forward propagation with musical feedback"""
@@ -447,6 +470,7 @@ def create_musical_composition(nn: HarmonicNeuralNetwork, duration: float = 5.0)
     # Generate sounds for each input
     step_duration = duration / len(inputs)
     for i, input_vector in enumerate(inputs):
+        # Forward pass without playing audio
         prediction = nn.forward_pass(input_vector.reshape(1, -1), play_audio=False)
         
         # Create sound for this step
@@ -456,27 +480,35 @@ def create_musical_composition(nn: HarmonicNeuralNetwork, duration: float = 5.0)
                 end_idx = int((i + 1) * step_duration * nn.sample_rate)
                 if end_idx > len(composition):
                     end_idx = len(composition)
-                    
+                
+                # Generate layer sound without playing it
                 layer_sound = nn._sonify_layer_activity(
-                    layer_idx-1, layer_activation, 
-                    duration=step_duration, 
-                    description=f"Step {i}"
+                    layer_idx-1, 
+                    layer_activation, 
+                    duration=step_duration
                 )
                 
-                # Add to composition with crossfade
-                fade_length = int(0.1 * nn.sample_rate)  # 100ms crossfade
-                if i > 0:
-                    # Apply fadeout to previous segment
-                    fadeout = np.linspace(1, 0, fade_length)
-                    composition[start_idx:start_idx+fade_length] *= fadeout
-                    # Apply fadein to new segment
-                    fadein = np.linspace(0, 1, fade_length)
-                    layer_sound[:fade_length] *= fadein
-                
-                composition[start_idx:end_idx] += layer_sound[:end_idx-start_idx]
+                if layer_sound is not None and len(layer_sound) > 0:
+                    # Ensure we don't exceed buffer length
+                    sound_length = min(len(layer_sound), end_idx - start_idx)
+                    
+                    # Add crossfade
+                    fade_length = int(0.1 * nn.sample_rate)  # 100ms crossfade
+                    if i > 0 and start_idx + fade_length < len(composition):
+                        # Apply fadeout to previous segment
+                        fadeout = np.linspace(1, 0, fade_length)
+                        composition[start_idx:start_idx+fade_length] *= fadeout
+                        # Apply fadein to new segment
+                        fadein = np.linspace(0, 1, fade_length)
+                        layer_sound[:fade_length] *= fadein
+                    
+                    # Add to composition
+                    composition[start_idx:start_idx+sound_length] += layer_sound[:sound_length]
     
     # Normalize final composition
-    composition = composition / np.max(np.abs(composition))
+    max_amplitude = np.max(np.abs(composition))
+    if max_amplitude > 0:
+        composition = composition / max_amplitude
     
     # Save composition
     nn.save_audio_sample("neural_composition.wav", composition)
